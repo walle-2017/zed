@@ -1,0 +1,80 @@
+name: Build custom Windows package
+
+on:
+  push:
+    branches:
+      - fix/debugger-stop-auto-navigation
+    paths:
+      - "crates/debugger_ui/**"
+      - ".github/workflows/build-custom-windows.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x86_64:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    env:
+      CI: "true"
+      CARGO_INCREMENTAL: "0"
+      ZED_WORKSPACE: ${{ github.workspace }}
+      RELEASE_VERSION: "0.0.0"
+      ZED_RELEASE_CHANNEL: "dev"
+    steps:
+      - name: Checkout patched branch
+        uses: actions/checkout@v4
+        with:
+          clean: true
+
+      - name: Enable Windows long paths
+        shell: pwsh
+        run: |
+          git config --system core.longpaths true
+          New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force | Out-Null
+
+      - name: Make Visual Studio path compatible with Zed bundler
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) {
+            throw "Visual Studio with C++ tools was not found"
+          }
+          $community = "C:\Program Files\Microsoft Visual Studio\2022\Community"
+          if (-not (Test-Path $community)) {
+            New-Item -ItemType Junction -Path $community -Target $vs | Out-Null
+          }
+
+      - name: Build official Windows bundle (unsigned)
+        shell: pwsh
+        run: |
+          ./script/bundle-windows.ps1 -Architecture x86_64
+
+      - name: Create portable ZIP
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:ZED_WORKSPACE "inno\x86_64"
+          $portable = Join-Path $env:ZED_WORKSPACE "target\Zed-Debugger-Fix-Windows-x86_64-portable.zip"
+          if (-not (Test-Path (Join-Path $source "Zed.exe"))) {
+            throw "Bundled Zed.exe was not found in $source"
+          }
+          Compress-Archive -Path "$source\*" -DestinationPath $portable -CompressionLevel Optimal -Force
+          Get-Item $portable | Format-List FullName,Length,LastWriteTime
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-Debugger-Fix-Windows-x86_64-portable
+          path: target/Zed-Debugger-Fix-Windows-x86_64-portable.zip
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload unsigned installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zed-Debugger-Fix-Windows-x86_64-setup
+          path: target/Zed-x86_64.exe
+          if-no-files-found: error
+          retention-days: 14
