@@ -76,6 +76,10 @@ pub struct StackFrameList {
     workspace: WeakEntity<Workspace>,
     selected_ix: Option<usize>,
     opened_stack_frame_id: Option<StackFrameId>,
+    // A stopped session may emit multiple StackTrace events while the user is
+    // inspecting another file. Only the first populated stack trace for a stop
+    // should automatically navigate the editor.
+    auto_navigate_pending: bool,
     list_state: ListState,
     list_filter: StackFrameFilter,
     filter_entries_indices: Vec<usize>,
@@ -106,9 +110,15 @@ impl StackFrameList {
                 SessionEvent::Threads => {
                     this.schedule_refresh(false, window, cx);
                 }
-                SessionEvent::Stopped(..)
-                | SessionEvent::StackTrace
-                | SessionEvent::HistoricSnapshotSelected => {
+                SessionEvent::Stopped(..) => {
+                    this.auto_navigate_pending = true;
+                    this.schedule_refresh(true, window, cx);
+                }
+                SessionEvent::StackTrace => {
+                    this.schedule_refresh(true, window, cx);
+                }
+                SessionEvent::HistoricSnapshotSelected => {
+                    this.auto_navigate_pending = true;
                     this.schedule_refresh(true, window, cx);
                 }
                 _ => {}
@@ -141,6 +151,7 @@ impl StackFrameList {
             error: None,
             selected_ix: None,
             opened_stack_frame_id: None,
+            auto_navigate_pending: true,
             list_filter,
             list_state,
             _refresh_task: Task::ready(()),
@@ -340,8 +351,9 @@ impl StackFrameList {
 
         if let Some(ix) = first_stack_frame_with_path
             .or(first_stack_frame)
-            .filter(|_| open_first_stack_frame)
+            .filter(|_| open_first_stack_frame && self.auto_navigate_pending)
         {
+            self.auto_navigate_pending = false;
             self.select_ix(Some(ix), cx);
             self.activate_selected_entry(window, cx);
         } else if let Some(old_selected_frame_id) = old_selected_frame_id {
