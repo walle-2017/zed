@@ -393,6 +393,17 @@ async fn test_select_stack_frame(executor: BackgroundExecutor, cx: &mut TestAppC
         assert_eq!(stack_frames, stack_frame_list.dap_stack_frames(cx));
     });
 
+    // A stack trace refresh while stopped must not automatically jump back to
+    // the first frame after the user has selected another frame.
+    stack_frame_list.update_in(cx, |stack_frame_list, window, cx| {
+        stack_frame_list.build_entries(true, window, cx);
+    });
+    cx.run_until_parked();
+
+    stack_frame_list.update(cx, |stack_frame_list, _| {
+        assert_eq!(Some(2), stack_frame_list.opened_stack_frame_id());
+    });
+
     let _ = workspace.update(cx, |workspace, window, cx| {
         let editors = workspace.items_of_type::<Editor>(cx).collect::<Vec<_>>();
         assert_eq!(1, editors.len());
