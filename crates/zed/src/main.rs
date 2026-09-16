@@ -196,6 +196,68 @@ fn fail_to_open_window(e: anyhow::Error, _cx: &mut App) {
         .detach();
     }
 }
+#[cfg(target_os = "windows")]
+fn copy_dir_contents_if_missing(source: &Path, destination: &Path) -> io::Result<()> {
+    if !source.exists() {
+        return Ok(());
+    }
+
+    std::fs::create_dir_all(destination)?;
+    for entry in std::fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+
+        if entry.file_type()?.is_dir() {
+            copy_dir_contents_if_missing(&source_path, &destination_path)?;
+        } else if !destination_path.exists() {
+            std::fs::copy(source_path, destination_path)?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn prepare_isolated_custom_build_data_dir() -> io::Result<Option<PathBuf>> {
+    let Some(directory_name) = option_env!("ZED_CUSTOM_USER_DATA_DIR_NAME") else {
+        return Ok(None);
+    };
+    let Some(local_app_data) = env::var_os("LOCALAPPDATA") else {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "LOCALAPPDATA is not set",
+        ));
+    };
+
+    let target = PathBuf::from(&local_app_data).join(directory_name);
+    std::fs::create_dir_all(&target)?;
+
+    let import_marker = target.join(".official-environment-imported-v1");
+    if !import_marker.exists() {
+        if let Some(roaming_app_data) = env::var_os("APPDATA") {
+            copy_dir_contents_if_missing(
+                &PathBuf::from(roaming_app_data).join("Zed"),
+                &target.join("config"),
+            )?;
+        }
+
+        let official_data = PathBuf::from(local_app_data).join("Zed");
+        copy_dir_contents_if_missing(
+            &official_data.join("extensions"),
+            &target.join("extensions"),
+        )?;
+        copy_dir_contents_if_missing(&official_data.join("prompts"), &target.join("prompts"))?;
+
+        std::fs::write(
+            import_marker,
+            b"Initial configuration and extensions copied from the official Zed profile.\n",
+        )?;
+    }
+
+    Ok(Some(target))
+}
+
 static STARTUP_TIME: OnceLock<Instant> = OnceLock::new();
 
 fn main() {
@@ -211,6 +273,30 @@ fn main() {
     util::prevent_root_execution();
 
     let args = Args::parse();
+
+    let custom_data_dir = if let Some(directory) = args.user_data_dir.as_deref() {
+        Some(paths::set_custom_data_dir(directory))
+    } else {
+        #[cfg(target_os = "windows")]
+        {
+            match prepare_isolated_custom_build_data_dir() {
+                Ok(Some(directory)) => {
+                    let directory = directory.to_string_lossy().into_owned();
+                    Some(paths::set_custom_data_dir(&directory))
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    eprintln!("Failed to prepare isolated Zed test profile: {error}");
+                    process::exit(1);
+                }
+            }
+        }
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            None
+        }
+    };
 
     // `zed --askpass` Makes zed operate in nc/netcat mode for use with askpass
     #[cfg(not(target_os = "windows"))]
@@ -259,15 +345,12 @@ fn main() {
         return;
     }
 
-    let restart_arguments = if let Some(directory) = args.user_data_dir.as_deref() {
-        let directory = paths::set_custom_data_dir(directory);
+    let restart_arguments = custom_data_dir.map_or_else(Vec::new, |directory| {
         vec![
             std::ffi::OsString::from("--user-data-dir"),
             directory.as_os_str().to_owned(),
         ]
-    } else {
-        Vec::new()
-    };
+    });
 
     #[cfg(target_os = "windows")]
     match util::get_zed_cli_path() {
