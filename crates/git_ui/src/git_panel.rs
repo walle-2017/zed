@@ -4030,9 +4030,9 @@ impl GitPanel {
         )
     }
 
-    /// Generates a commit message using an LLM.
+    /// Generates a commit message using an LLM from staged changes only.
     pub fn generate_commit_message(&mut self, cx: &mut Context<Self>) {
-        if !self.can_commit() || !AgentSettings::get_global(cx).enabled(cx) {
+        if !self.has_staged_changes() || !AgentSettings::get_global(cx).enabled(cx) {
             return;
         }
 
@@ -4048,13 +4048,7 @@ impl GitPanel {
 
         telemetry::event!("Git Commit Message Generated");
 
-        let diff = repo.update(cx, |repo, cx| {
-            if self.has_staged_changes() {
-                repo.diff(DiffType::HeadToIndex, cx)
-            } else {
-                repo.diff(DiffType::HeadToWorktree, cx)
-            }
-        });
+        let diff = repo.update(cx, |repo, cx| repo.diff(DiffType::HeadToIndex, cx));
 
         let temperature = AgentSettings::temperature_for_model(&model, cx);
 
@@ -6076,7 +6070,7 @@ impl GitPanel {
         let has_commit_model_configuration_error = model_registry
             .configuration_error(model_registry.commit_message_model(cx), cx)
             .is_some();
-        let can_commit = self.can_commit();
+        let has_staged_changes = self.has_staged_changes();
 
         let editor_focus_handle = self.commit_editor.focus_handle(cx);
 
@@ -6087,19 +6081,19 @@ impl GitPanel {
             } else {
                 Color::Muted
             })
-            .disabled(!can_commit || has_commit_model_configuration_error)
+            .disabled(!has_staged_changes || has_commit_model_configuration_error)
             .on_click(cx.listener(move |this, _event, _window, cx| {
                 this.generate_commit_message(cx);
             }));
 
-        let button = if can_commit && has_commit_model_configuration_error {
+        let button = if has_staged_changes && has_commit_model_configuration_error {
             button.hoverable_tooltip(move |_window, cx| {
                 cx.new(|_| GenerateCommitMessageConfigurationTooltip).into()
             })
         } else {
             button.tooltip(move |_window, cx| {
-                if !can_commit {
-                    Tooltip::simple("No Changes to Commit", cx)
+                if !has_staged_changes {
+                    Tooltip::simple("No Staged Changes", cx)
                 } else {
                     Tooltip::for_action_in(
                         "Generate Commit Message",
